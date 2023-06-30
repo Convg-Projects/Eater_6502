@@ -1,0 +1,591 @@
+PORTB = $6000				; I/O Register B
+PORTA = $6001				; I/O Register A
+DDRB  = $6002				; Data Direction Register B
+DDRA  = $6003				; Data Direction Register A
+T1CL  = $6004				; T1 Low-Order Counter/Latches
+T1CH  = $6005				; T1 High-Order Counter
+T1LL  = $6006				; T1 Low-Order Latches
+T1LH  = $6007				; T1 High-Order Latches
+T2CL  = $6008				; T2 Low-Order Counter/Latches
+T2CH  = $6009				; T2 High-Order Counter
+SR    = $600a				; Shift Register
+ACR   = $600b				; Auxilliary Control Register
+PCR   = $600c				; Peripheral Control Register
+IFR   = $600d				; Interrupt Flags Register
+IER   = $600e				; Interrupt Enable Register
+
+E  = %00001000				; LCD Enable
+RW = %00000100				; LCD 
+RS = %00000010				; LCD Register Select
+
+ .org $0000
+ ; Binary to ASCII parameters
+ ascii_string_address: .word $00
+ value:		       .word $00
+ ; Binary to ASCII variables
+ modten:	       .word $00
+ ; Binary to Hex parameters
+ hex_string_address:   .word $00
+ hex_value:	       .word $00
+ ; Binary to Hex8 parameters
+ hex8_string_address:  .word $00
+ hex8_value:	       .byte $0
+ ; Push character parameters
+ string_address:       .word $00
+ new_character:        .byte $0
+ ; Print string parameters
+ print_string_address: .word $00
+
+ ; Global variables
+ number_output_string: .asciiz "XXXXXXXXXX"
+ counter:	       .word $00
+
+
+; ========================================================================================================================================================================
+; Program Start
+; ========================================================================================================================================================================
+
+
+ .org $8000
+
+
+ address_string: .asciiz "Address: 0x"
+ byte_string:	 .asciiz "                         Data: 0x"
+
+ 
+ reset:
+	ldx #$ff
+	txs				; Initialise SP
+	cli				; Enable interrupts
+
+	lda #%10000010			; Set CA1
+	sta IER
+	lda #%00000000			; Set interrupts to input - negative active edge
+	sta PCR
+
+	lda #%11111111			; Set all pins on Port B to output
+       	sta DDRB
+	lda #%00100000			; Set LCD to 4-bit operation
+	jsr lcd_instruction
+	lda #%00100000			; Set 4-bit operation with parameters
+	jsr lcd_instruction
+	lda #%10000000			; Selects 2-line display and 5 × 8 dot character font
+	jsr lcd_instruction
+	lda #%00000000			; Display On/Off control
+	jsr lcd_instruction
+	lda #%11100000			; Turn on display and cursor
+	jsr lcd_instruction
+	lda #%01100000			; Increment and shift cursor without shifting display
+	jsr lcd_instruction
+	lda #%00000000			; Entry mode set
+	jsr lcd_instruction
+	lda #%00000000			; Clear display
+	jsr lcd_instruction
+	lda #%00010000			; Clear display
+	jsr lcd_instruction
+
+	lda #$00
+	sta counter
+	lda #$80
+	sta counter + 1
+
+ main_loop:
+	lda #%00000000			; Cursor to home
+	jsr lcd_instruction
+	lda #%00100000			; Cursor to home
+	jsr lcd_instruction
+
+	lda #>address_string
+	pha
+	lda #<address_string
+	pha
+
+	jsr print_string
+
+	lda counter + 1
+	pha
+	lda counter
+	pha
+	lda #>number_output_string
+	pha
+	lda #<number_output_string
+	pha
+	jsr binary_to_hex
+
+	lda #>number_output_string
+	pha
+	lda #<number_output_string
+	pha
+	jsr print_string
+
+ 	lda #>byte_string
+	pha
+	lda #<byte_string
+	pha
+
+	jsr print_string
+
+	ldy #0
+	lda (counter),y
+	pha
+	lda #>number_output_string
+	pha
+	lda #<number_output_string
+	pha
+	jsr binary8_to_hex
+
+	lda #>number_output_string
+	pha
+	lda #<number_output_string
+	pha
+	jsr print_string
+
+	lda #" "
+	jsr print_character
+	lda #"("
+	jsr print_character
+	ldy #0
+	lda (counter),y
+	jsr print_character
+	lda #")"
+	jsr print_character
+
+	jmp main_loop
+
+ increment_counter:
+	lda counter
+	clc
+	adc #1
+	sta counter
+	lda counter + 1
+	adc #0
+	sta counter + 1
+
+	rts
+
+
+; ========================================================================================================================================================================
+; Binary to ASCII (16-bit) [Params: Value-H, Value-L, String Address-H, String Address-L]
+; ========================================================================================================================================================================
+
+
+ binary_to_ascii:
+	pha
+	txa
+	pha
+	tya
+	pha				; Save register values
+
+	tsx
+	txa
+	clc
+	adc #5
+	tax
+	txs
+	pla				; Pull low-order byte of string address from stack
+	sta ascii_string_address
+	pla				; Pull high-order byte of string address from stack
+	sta ascii_string_address + 1
+	pla
+	sta value			; Pull low-order byte of value from stack
+	pla
+	sta value + 1			; Pull high-order byte of value from stack
+	txa
+	sec
+	sbc #5
+	tax
+	txs				; Return SP to bottom of stack
+
+	lda #0
+	ldx #0
+	sta (ascii_string_address,x)	; Add terminator to output
+
+ divide:
+	lda #0				; Initialise remainder to zero
+	sta modten
+	sta modten + 1
+	clc
+
+	ldx #16
+ divloop:
+	rol value			; Rotate quotient and remainder
+	rol value + 1
+	rol modten
+	rol modten + 1
+
+	; A:Y = dividend - divisor
+	sec
+	lda modten
+	sbc #10
+	tay				; Save low byte in Y
+	lda modten + 1
+	sbc #0
+	bcc ignore_result		; branch if dividend < divisor
+	sty modten
+	sta modten + 1
+
+ ignore_result:
+	dex
+	bne divloop
+	rol value			; Shift in last bit of quotient
+	rol value + 1
+
+	lda modten
+	clc
+	adc #"0"
+
+	pha				; Push new first char onto stack
+	ldy #0
+	
+ char_loop:
+	lda (ascii_string_address),y	; Get character from string and put into X
+	tax
+	pla
+	sta (ascii_string_address),y	; Pull character off stack and add to string
+	iny
+	txa
+	pha				; Push character from string onto stack
+	bne char_loop			; If terminator not reached, loop
+	
+	pla				; Pull terminator
+	sta (ascii_string_address),y	; Add terminator to message
+
+	lda value
+	ora value + 1
+	bne divide			; Divide again if value is not zero
+
+	pla
+	tay
+	pla
+	tax
+	pla				; Restore register values
+
+	rts
+
+; ========================================================================================================================================================================
+; Binary to Hex (16-bit) [Params: Value-H, Value-L, String Address-H, String Address-L]
+; ========================================================================================================================================================================
+
+
+ binary_to_hex:
+	pha
+	txa
+	pha
+	tya
+	pha				; Save register values
+
+	tsx
+	txa
+	clc
+	adc #5
+	tax
+	txs
+	pla				; Pull low-order byte of string address from stack
+	sta hex_string_address
+	pla				; Pull high-order byte of string address from stack
+	sta hex_string_address + 1
+	pla
+	sta hex_value			; Pull low-order byte of value from stack
+	pla
+	sta hex_value + 1		; Pull high-order byte of value from stack
+	txa
+	sec
+	sbc #5
+	tax
+	txs				; Return SP to bottom of stack
+
+	lda #0
+	ldx #0
+	sta (hex_string_address,x)	; Add terminator to output
+
+ binary_to_hex_zero:
+	lda hex_value
+	and #%00001111			; Mask high nibble
+	tax
+	lda hex_chars,x
+	jsr hex_push_char
+	lda hex_value
+	lsr
+	lsr
+	lsr
+	lsr
+	and #%00001111			; Mask low nibble
+	tax
+	lda hex_chars,x
+	jsr hex_push_char
+	lda hex_value + 1
+	and #%00001111			; Mask high nibble
+	tax
+	lda hex_chars,x
+	jsr hex_push_char
+	lda hex_value + 1
+	lsr
+	lsr
+	lsr
+	lsr
+	and #%00001111			; Mask low nibble
+	tax
+	lda hex_chars,x
+	jsr hex_push_char
+
+	pla
+	tay
+	pla
+	tax
+	pla				; Restore register values
+
+	rts
+	
+ hex_push_char:
+	pha				; Push new first char onto stack
+	ldy #0
+ hex_char_loop:
+	lda (hex_string_address),y	; Get character from string and put into X
+	tax
+	pla
+	sta (hex_string_address),y	; Pull character off stack and add to string
+	iny
+	txa
+	pha				; Push character from string onto stack
+	bne hex_char_loop		; If terminator not reached, loop
+	
+	pla				; Pull terminator
+	sta (hex_string_address),y	; Add terminator to message
+	rts
+
+; ========================================================================================================================================================================
+; Binary to Hex (8-bit) [Params: Value, String Address-H, String Address-L]
+; ========================================================================================================================================================================
+
+
+ binary8_to_hex:
+	pha
+	txa
+	pha
+	tya
+	pha				; Save register values
+
+	tsx
+	txa
+	clc
+	adc #5
+	tax
+	txs
+	pla				; Pull low-order byte of string address from stack
+	sta hex8_string_address
+	pla				; Pull high-order byte of string address from stack
+	sta hex8_string_address + 1
+	pla
+	sta hex8_value			; Pull low-order byte of value from stack
+	txa
+	sec
+	sbc #5
+	tax
+	txs				; Return SP to bottom of stack
+
+	lda #0
+	ldx #0
+	sta (hex8_string_address,x)	; Add terminator to output
+
+ binary8_to_hex_zero:
+	lda hex8_value
+	and #%00001111			; Mask high nibble
+	tax
+	lda hex_chars,x
+	jsr hex8_push_char
+	lda hex8_value
+	lsr
+	lsr
+	lsr
+	lsr
+	and #%00001111			; Mask low nibble
+	tax
+	lda hex_chars,x
+	jsr hex8_push_char
+
+	pla
+	tay
+	pla
+	tax
+	pla				; Restore register values
+
+	rts
+	
+ hex8_push_char:
+	pha				; Push new first char onto stack
+	ldy #0
+ hex8_char_loop:
+	lda (hex8_string_address),y	; Get character from string and put into X
+	tax
+	pla
+	sta (hex8_string_address),y	; Pull character off stack and add to string
+	iny
+	txa
+	pha				; Push character from string onto stack
+	bne hex8_char_loop		; If terminator not reached, loop
+	
+	pla				; Pull terminator
+	sta (hex8_string_address),y	; Add terminator to message
+	rts
+
+ hex_chars: .ascii "0123456789ABCDEF"
+
+
+; ========================================================================================================================================================================
+; Print null-terminated String  [Params: String Address-H, String Address-L]
+; ========================================================================================================================================================================
+
+
+ print_string:
+	pha
+	txa
+	pha
+	tya
+	pha				; Save register values
+
+	tsx
+	txa
+	clc
+	adc #5
+	tax
+	txs
+	pla				; Pull low-order byte of string address from stack
+	sta print_string_address
+	pla				; Pull high-order byte of string address from stack
+	sta print_string_address + 1
+	txa
+	sec
+	sbc #5
+	tax
+	txs				; Return SP to bottom of stack
+
+	ldy #0
+ print_loop:
+	lda (print_string_address),y
+	beq string_printed
+	jsr print_character
+	iny
+	jmp print_loop
+ string_printed:
+	pla
+	tay 
+	pla
+	tax
+	pla				; Restore register values
+
+	rts
+
+
+; ========================================================================================================================================================================
+; LCD Subroutines
+; ========================================================================================================================================================================
+
+
+ lcd_wait:
+	pha
+	lda #%01111111			; Set Busy flag pin to input
+	sta DDRB
+ lcd_busy:
+	lda #RW
+	sta PORTB
+	lda #(RW | E)
+	sta PORTB
+	lda PORTB
+	pha
+	lda #RW
+	sta PORTB
+	lda #(RW | E)
+	sta PORTB
+	lda #RW
+	sta PORTB
+	lda #0
+	sta PORTB
+	pla
+	and #%10000000
+	bne lcd_busy
+
+	lda #%11111111			; Set all pins on Port B to output
+	sta DDRB
+	pla
+	rts
+
+ lcd_instruction:
+	jsr lcd_wait
+	sta PORTB
+	and #~(0 | RS | RW | E)		; Clear control pins
+	sta PORTB
+	ora #E				; Set enable bit to send instruction
+	sta PORTB
+	and #~(0 | RS | RW | E)		; Clear control pins
+	sta PORTB
+	rts
+
+ print_character:
+	pha
+	jsr lcd_wait
+	and #%11110000
+	sta PORTB
+	ora #RS				; Enable register select to write
+	sta PORTB
+	ora #E				; Set enable bit to send instruction
+	sta PORTB
+	and #~E				; Enable register select to write
+	sta PORTB
+	pla
+	pha
+	asl
+	asl
+	asl
+	asl
+	sta PORTB
+	ora #RS				; Enable register select to write
+	sta PORTB
+	ora #E				; Set enable bit to send instruction
+	sta PORTB
+	and #~E				; Enable register select to write
+	sta PORTB
+	pla
+	rts
+
+
+; ========================================================================================================================================================================
+; Interrupt Service Routine
+; ========================================================================================================================================================================
+
+
+ nmi:
+ irq:
+	pha
+	txa
+	pha
+	tya
+	pha				; Push A, X, and Y so they aren't overwritten by interrupt routine
+
+	jsr increment_counter
+ exit_irq:
+	ldy #$ff
+	ldx #$ff
+ delay:
+	dex
+	bne delay
+	dey
+	bne delay
+
+
+	bit PORTA			; Reading Port A clears the interrupt on the 65c22
+
+	pla
+	tay
+	pla
+	tax
+	pla
+	rti
+
+; ========================================================================================================================================================================
+; Interrupt Vectors
+; ========================================================================================================================================================================
+
+ .org $fffa
+ .word nmi
+ .word reset
+ .word irq
